@@ -5,14 +5,13 @@ import (
 	"flag"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 
-	"github.com/joho/godotenv"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+const endpoint = "https://api.binance.com"
 const namespace = "binance"
 const cheapRequest = "/api/v3/klines?symbol=BTCUSDT&interval=1m"
 
@@ -33,7 +32,7 @@ var (
 	}
 	client = &http.Client{Transport: tr}
 
-	listenAddress = flag.String("web.listen-address", ":9141",
+	listenAddress = flag.String("web.listen-address", ":9133",
 		"Address to listen on for telemetry")
 	metricsPath = flag.String("web.telemetry-path", "/metrics",
 		"Path under which to expose metrics")
@@ -111,16 +110,9 @@ func (c *WeightCollector) HitBinanceRestApisAndUpdateMetrics(ch chan<- prometheu
 }
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("Error loading .env file, assume env variables are set.")
-	}
-
 	flag.Parse()
 
-	binanceEndpoint := os.Getenv("BINANCE_ENDPOINT")
-
-	exporter := NewCollector(binanceEndpoint)
+	exporter := NewCollector(endpoint)
 	prometheus.MustRegister(exporter)
 
 	http.Handle(*metricsPath, promhttp.Handler())
