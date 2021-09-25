@@ -106,6 +106,9 @@ func (c *WeightCollector) HitBinanceRestApisAndUpdateMetrics(ch chan<- prometheu
 		c.weightUsedMinute, prometheus.GaugeValue, weight_used_1m,
 	)
 
+	// Discard response
+	defer resp.Body.Close()
+
 	log.Println("Endpoint scraped")
 }
 
