@@ -13,7 +13,7 @@ import (
 
 const endpoint = "https://api.binance.com"
 const namespace = "binance"
-const cheapRequest = "/api/v3/klines?symbol=BTCUSDT&interval=1m"
+const cheapRequest = "/api/v3/ping"
 
 //Define a struct for you collector that contains pointers
 //to prometheus descriptors for each metric you wish to expose.
