@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
+	"github.com/procyon-projects/chrono"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -24,23 +27,29 @@ type WeightCollector struct {
 	weightUsed       *prometheus.Desc
 	weightUsedMinute *prometheus.Desc
 	binanceEndpoint  string
+	lastWeight       float64
+	isUp             float64
 }
 
 var (
 	tr = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
-	client = &http.Client{Transport: tr}
+	client        = &http.Client{Transport: tr}
+	taskScheduler = chrono.NewDefaultTaskScheduler()
 
 	listenAddress = flag.String("web.listen-address", ":9133",
 		"Address to listen on for telemetry")
 	metricsPath = flag.String("web.telemetry-path", "/metrics",
 		"Path under which to expose metrics")
+	autoScrape = flag.Bool("auto-scrape", false, "Path under which to expose metrics")
 )
 
 func NewCollector(binanceEndpoint string) *WeightCollector {
 	return &WeightCollector{
 		binanceEndpoint: binanceEndpoint,
+		lastWeight:      0,
+		isUp:            0,
 		up: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "", "up"),
 			"Was the last Binance API query successful.",
@@ -72,10 +81,16 @@ func (c *WeightCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *WeightCollector) Collect(ch chan<- prometheus.Metric) {
-	c.HitBinanceRestApisAndUpdateMetrics(ch)
+	if !*autoScrape {
+		c.RequestWeight()
+	}
+	c.UpdateMetrics(ch)
 }
 
-func (c *WeightCollector) HitBinanceRestApisAndUpdateMetrics(ch chan<- prometheus.Metric) {
+func (c *WeightCollector) RequestWeight() {
+
+	now := time.Now()
+	log.Println("Weight requested at " + now.String())
 	// Load BTC klines to get response where we can parse the header
 	req, err := http.NewRequest("GET", c.binanceEndpoint+cheapRequest, nil)
 	if err != nil {
@@ -86,6 +101,20 @@ func (c *WeightCollector) HitBinanceRestApisAndUpdateMetrics(ch chan<- prometheu
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Print(err)
+		c.isUp = 0
+		return
+	}
+
+	c.isUp = 1
+	c.lastWeight, _ = strconv.ParseFloat(resp.Header.Get("x-mbx-used-weight-1m"), 64)
+
+	// Discard response
+	defer resp.Body.Close()
+}
+
+func (c *WeightCollector) UpdateMetrics(ch chan<- prometheus.Metric) {
+
+	if c.isUp == 0 {
 		ch <- prometheus.MustNewConstMetric(
 			c.up, prometheus.GaugeValue, 0,
 		)
@@ -96,18 +125,13 @@ func (c *WeightCollector) HitBinanceRestApisAndUpdateMetrics(ch chan<- prometheu
 		c.up, prometheus.GaugeValue, 1,
 	)
 
-	weight_used, _ := strconv.ParseFloat(resp.Header.Get("x-mbx-used-weight"), 64)
 	ch <- prometheus.MustNewConstMetric(
-		c.weightUsed, prometheus.GaugeValue, weight_used,
+		c.weightUsed, prometheus.GaugeValue, c.lastWeight,
 	)
 
-	weight_used_1m, _ := strconv.ParseFloat(resp.Header.Get("x-mbx-used-weight-1m"), 64)
 	ch <- prometheus.MustNewConstMetric(
-		c.weightUsedMinute, prometheus.GaugeValue, weight_used_1m,
+		c.weightUsedMinute, prometheus.GaugeValue, c.lastWeight,
 	)
-
-	// Discard response
-	defer resp.Body.Close()
 
 	log.Println("Endpoint scraped")
 }
@@ -117,6 +141,18 @@ func main() {
 
 	exporter := NewCollector(endpoint)
 	prometheus.MustRegister(exporter)
+
+	// Check API every minute at second 58
+	if *autoScrape {
+		now := time.Now()
+		_, err := taskScheduler.ScheduleAtFixedRate(func(ctx context.Context) {
+			exporter.RequestWeight()
+		}, 1*time.Minute, chrono.WithStartTime(now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), 58))
+
+		if err == nil {
+			log.Print("Started schedule.")
+		}
+	}
 
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
